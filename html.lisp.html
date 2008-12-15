@@ -1,0 +1,1213 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN">
+<!-- Created by htmlize-1.34 in css mode. -->
+<html>
+  <head>
+    <title>html.lisp</title>
+    <style type="text/css">
+    <!--
+      body {
+        color: #000000;
+        background-color: #ffffff;
+      }
+      .builtin {
+        /* font-lock-builtin-face */
+        color: #da70d6;
+      }
+      .comment {
+        /* font-lock-comment-face */
+        color: #b22222;
+      }
+      .comment-delimiter {
+        /* font-lock-comment-delimiter-face */
+        color: #b22222;
+      }
+      .doc {
+        /* font-lock-doc-face */
+        color: #bc8f8f;
+      }
+      .function-name {
+        /* font-lock-function-name-face */
+        color: #0000ff;
+      }
+      .keyword {
+        /* font-lock-keyword-face */
+        color: #a020f0;
+      }
+      .slime-reader-conditional {
+        /* slime-reader-conditional-face */
+        color: #b22222;
+      }
+      .string {
+        /* font-lock-string-face */
+        color: #bc8f8f;
+      }
+      .type {
+        /* font-lock-type-face */
+        color: #228b22;
+      }
+      .variable-name {
+        /* font-lock-variable-name-face */
+        color: #b8860b;
+      }
+      .warning {
+        /* font-lock-warning-face */
+        color: #ff0000;
+        font-weight: bold;
+      }
+
+      a {
+        color: inherit;
+        background-color: inherit;
+        font: inherit;
+        text-decoration: inherit;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+    -->
+    </style>
+  </head>
+  <body>
+    <pre>
+<span class="comment-delimiter">;;; </span><span class="comment">-*- Lisp -*-
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Walk through the thought process of using the macro facility
+</span><span class="comment-delimiter">;; </span><span class="comment">within ANSI Common Lisp.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">This is a step-by-step guide to various iterations (including
+</span><span class="comment-delimiter">;; </span><span class="comment">mistakes) along the way to creating powerful macros with
+</span><span class="comment-delimiter">;; </span><span class="comment">compile-time considerations that save run-time cycles.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">But first, just get something working; optimizations come later.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Your mistakes might be different than mine.  The point is that
+</span><span class="comment-delimiter">;; </span><span class="comment">while you will make programming errors, some lead to inefficiencies
+</span><span class="comment-delimiter">;; </span><span class="comment">and others detract from correctness.  Here, we resolve correctness
+</span><span class="comment-delimiter">;; </span><span class="comment">first, push things to be handled at compile-time second and
+</span><span class="comment-delimiter">;; </span><span class="comment">efficiencies last.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">The choice of project is HTML code generation.  Since mid-1990's,
+</span><span class="comment-delimiter">;; </span><span class="comment">many programmers already know HTML/XHTML (<a href="http://w3.org/TR/xhtml">http://w3.org/TR/xhtml</a>),
+</span><span class="comment-delimiter">;; </span><span class="comment">so you can hopefully focus on Lisp.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">We create macros for a familiar HTML tag, but we want XHTML
+</span><span class="comment-delimiter">;; </span><span class="comment">compliance rather than early 1990's trivial use of HTML.
+</span><span class="comment-delimiter">;; </span><span class="comment">That is, we accommodate optional attributes for style sheets, etc.
+</span><span class="comment-delimiter">;; </span><span class="comment">(For brevity, however, we omit some attributes like "tabindex".)
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">For example, generate: &lt;a href="link" class="foo"&gt;label&lt;/a&gt;
+</span><span class="comment-delimiter">;; </span><span class="comment">from (a (:href "link" :class "foo") "label")
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Note, however, that your code might use hard-coded strings or other
+</span><span class="comment-delimiter">;; </span><span class="comment">compile-time constants.  Lisp encourages you to make the compiler
+</span><span class="comment-delimiter">;; </span><span class="comment">resolve this, so the run-time never deals with this particular
+</span><span class="comment-delimiter">;; </span><span class="comment">substitution: (FORMAT nil "class=\"~A\"" "foo").
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">This will get you well on your way to creating your own
+</span><span class="comment-delimiter">;; </span><span class="comment">domain-specific language on top of Lisp.
+</span>
+
+<span class="comment-delimiter">;; </span><span class="comment">License:
+  Copyright (C) 2006, 2008 <a href="http://play.org/daniel">Daniel Joseph Pezely</a>
+</span><span class="comment-delimiter">;; </span><span class="comment">Available under a Creative Commons License.
+</span><span class="comment-delimiter">;; </span><span class="comment"><a href="http://creativecommons.org/licenses/by/2.0/">http://creativecommons.org/licenses/by/2.0/</a>
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Document history:
+</span><span class="comment-delimiter">;; </span><span class="comment">Fixed typos, compiles on MacOSX (x86, 10.5.5) under SBCL (1.0.20 &amp; .23, December 2008)
+</span><span class="comment-delimiter">;; </span><span class="comment">Compiles on MacOSX (PPC, 10.4.7) under SBCL (0.9.14, August 2006)
+</span><span class="comment-delimiter">;; </span><span class="comment">Originally compiled on MacOSX (PPC, 10.4) under SBCL (0.9.11, June 2006)
+</span>
+
+(<span class="keyword">defpackage</span> <span class="type">:html</span>  (<span class="builtin">:use</span> <span class="builtin">:cl</span>))
+(<span class="keyword">in-package</span> <span class="builtin">:html</span>)
+
+(<span class="keyword">declaim</span> (optimize (safety 3) (debug 3) (speed 0) (space 0)))
+
+
+<span class="comment-delimiter">;; </span><span class="comment">First attempt at creating a macro for HTML's &lt;A&gt; tag.
+</span>
+(<span class="keyword">defmacro</span> <span class="function-name">anchor1</span> (value <span class="type">&amp;key</span> href id name style target title)
+  `(concatenate 'string <span class="string">"&lt;a "</span>
+                ,(mapcan #'(<span class="keyword">lambda</span> (x)
+                             (<span class="keyword">if</span> (second x)
+                                 `(format nil <span class="string">"~A=\"~A\""</span>
+                                          ,(first x)
+                                          ,(second x))))
+                         `((<span class="string">"href"</span> ,href) (<span class="string">"id"</span> ,id) (<span class="string">"name"</span> ,name)
+                           (<span class="string">"style"</span> ,style) (<span class="string">"target"</span> ,target) (<span class="string">"title"</span> ,title)))
+                (format nil <span class="string">"&gt;~A&lt;/a&gt;"</span> ,value)))
+
+<span class="comment-delimiter">;; </span><span class="comment">Testing:
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(anchor1 "label" :href "link"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(anchor1 "label" :href "link")
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Well... it works...  (ugly but gives the right final answer)
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">There are too many calls to FORMAT at run-time.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">We can do better!
+</span>
+
+
+<span class="comment-delimiter">;; </span><span class="comment">Resolve attribute names at compile-time because these are
+</span><span class="comment-delimiter">;; </span><span class="comment">(usually) constant strings since they come from keywords of our
+</span><span class="comment-delimiter">;; </span><span class="comment">parameter list.  Let's see if we might leverage the fact our
+</span><span class="comment-delimiter">;; </span><span class="comment">parameter names happen to be HTML attribute names as well...
+</span><span class="comment-delimiter">;; </span><span class="comment">(Hint: this version won't work and expect STYLE-WARNINGS.)
+</span>
+<span class="slime-reader-conditional">#+(or)
+(defmacro anchor2-BROKEN (value &amp;key href id name style target title)
+  `(concatenate 'string "&lt;a "
+                ,@(mapcar #'(lambda (x)
+                              (if (symbol-value x)
+                                  (typecase x
+                                    (string
+                                     (format nil "~A=\"~A\"" (symbol-name x) x))
+                                    (otherwise
+                                     `(format nil "~A=\"~A\"" ,(symbol-name x) ,x)))))
+                          (list 'href 'id 'name 'target 'title)) ;WRONG!
+                (format nil "&gt;~A&lt;/a&gt;" ,value)))</span>
+
+<span class="comment-delimiter">;; </span><span class="comment">Nice try, but the approach of (list 'href ...) isn't correct for Lisp.
+</span>
+
+<span class="comment-delimiter">;; </span><span class="comment">Grr.... Do it the hard/ugly way-- just make it work for now, then
+</span><span class="comment-delimiter">;; </span><span class="comment">we'll clean it up in the next pass.
+</span>    
+(<span class="keyword">defmacro</span> <span class="function-name">anchor3</span> (content <span class="type">&amp;key</span> class href id name style target title)
+  (<span class="keyword">let</span> ((args (list (list 'class class) <span class="comment-delimiter">; </span><span class="comment">'args is ugly, but just make it work!
+</span>                    (list 'href href)
+                    (list 'id id)
+                    (list 'name name)
+                    (list 'style style)
+                    (list 'target target)
+                    (list 'title title))))
+    `(format nil
+             ,(identity <span class="comment-delimiter">;</span><span class="comment">IDENTITY here helps maintain backquote/comma sanity
+</span>               `(concatenate            <span class="comment-delimiter">; </span><span class="comment">hint: that's a clue!
+</span>                 'string
+                 <span class="string">"&lt;a"</span>
+                 ,@(remove-if #'null <span class="comment-delimiter">;</span><span class="comment">REMOVE-IF needed due to MAPCAR and IF combo.
+</span>                              (mapcar #'(<span class="keyword">lambda</span> (x)
+                                          (<span class="keyword">if</span> (second x)
+                                              (concatenate 'string <span class="string">" "</span>
+                                                           (string-downcase
+                                                            (symbol-name (first x)))
+                                                           <span class="string">"=\"~A\""</span>)))
+                                      args))
+                 <span class="string">"&gt;~A&lt;/a&gt;"</span>))
+             ,@(remove-if #'null
+                          (mapcar #'(<span class="keyword">lambda</span> (x) (<span class="keyword">if</span> (second x)
+                                                    (second x)))
+                                  args))
+             ,content)))
+
+<span class="comment-delimiter">;; </span><span class="comment">Testing:
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(anchor3 "label" :href "link" :class "foo"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(anchor3 "label" :href "link" :class "foo")
+</span>
+
+
+<span class="comment-delimiter">;; </span><span class="comment">Now break-out what would be common with other HTML/XML tags.  This
+</span><span class="comment-delimiter">;; </span><span class="comment">gives us a general way to access the xml attributes, thereby doing
+</span><span class="comment-delimiter">;; </span><span class="comment">away with ugly definition of 'args of the previous example.
+</span><span class="comment-delimiter">;; </span><span class="comment">But fear not!  We'll account for Emacs/SLIME's parameter hints (see below).
+</span>
+(<span class="keyword">defmacro</span> <span class="function-name">xml-element1</span> (tag (<span class="type">&amp;rest</span> key-value-pairs) <span class="type">&amp;body</span> content)
+  <span class="comment-delimiter">;; </span><span class="comment">Note lack of WITH-GENSYMS because no variables are named within the expansion.
+</span>  (<span class="keyword">let</span> ((tag-name (string-downcase (symbol-name tag)))
+        <span class="comment-delimiter">;; </span><span class="comment">this idiom of using #'cddr came from looking at someone else's code:
+</span>        (args (<span class="keyword">loop</span> for (k v) on key-value-pairs by #'cddr
+                 collect (list (string-downcase (symbol-name k)) v))))
+    `(format nil
+             ,(identity <span class="comment-delimiter">;</span><span class="comment">again, IDENTITY used only for backquote/comma sanity below
+</span>               `(concatenate
+                 'string
+                 <span class="string">"&lt;"</span> ,tag-name
+                 ,@(remove-if #'null
+                              (mapcar #'(<span class="keyword">lambda</span> (x)
+                                          (<span class="keyword">if</span> (second x)
+                                              (concatenate 'string <span class="string">" "</span> (first x) <span class="string">"=\"~A\""</span>)))
+                                      args))
+                 <span class="string">"&gt;~A"</span>
+                 <span class="string">"&lt;/"</span> ,tag-name <span class="string">"&gt;"</span>))
+             ,@(remove-if #'null
+                          (mapcar #'(<span class="keyword">lambda</span> (x) (<span class="keyword">if</span> (second x)
+                                                    (second x)))
+                                  args))
+             ,@content)))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element1 :a (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element1 :a (:href "link" :class "foo") "label")
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Although we use 'args from &amp;rest, we also specify &amp;key to help the
+</span><span class="comment-delimiter">;; </span><span class="comment">two programmers who are still unfamiliar with HTML.
+</span>(<span class="keyword">defmacro</span> <span class="function-name">anchor4</span> ((<span class="type">&amp;rest</span> args <span class="type">&amp;key</span> class href id name style target title) <span class="type">&amp;body</span> content)
+  `(xml-element1 <span class="builtin">:a</span> (,@args) ,@content))
+<span class="comment-delimiter">;; </span><span class="comment">Oops, "style warning" from compiler... 
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Add IGNORE:
+</span>(<span class="keyword">defmacro</span> <span class="function-name">anchor5</span> ((<span class="type">&amp;rest</span> args <span class="type">&amp;key</span> class href id name style target title) <span class="type">&amp;body</span> content)
+  (<span class="keyword">declare</span> (ignore class href id name style target title))
+  `(xml-element1 <span class="builtin">:a</span> (,@args) ,@content))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(anchor5 (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 (macroexpand-1 '(anchor5 (:href "link" :class "foo") "label")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(anchor5 (:href "link" :class "foo") "label")
+</span><span class="comment-delimiter">;; </span><span class="comment">invalid HTML, valid Lisp: (anchor5 () "label")
+</span><span class="comment-delimiter">;; </span><span class="comment">should fail with "link" unknown: (anchor5 ("link" "foo") "label")
+</span>
+
+
+<span class="comment-delimiter">;; </span><span class="comment">We're on a roll!
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Hmm... Seems easy enough to generate various HTML tags from a spec...
+</span><span class="comment-delimiter">;; </span><span class="comment">Yes, a spec such as the DTD for XHTML-Strict... Oh, the possibilities!
+</span>
+
+
+<span class="comment-delimiter">;; </span><span class="comment">Note: no GENSYMs because no vars exposed in expansion
+</span>
+(<span class="keyword">defmacro</span> <span class="function-name">xhtml-generate-BROKEN</span> (tag-name (<span class="type">&amp;rest</span> attributes) <span class="type">&amp;key</span> (end-tag t))
+  (<span class="keyword">let*</span> ((tag tag-name)
+         (def `(<span class="keyword">defmacro</span> ,tag))
+         (all-args `(<span class="type">&amp;rest</span> args <span class="type">&amp;key</span> ,@attributes))
+         (call ``(xml-element1 ,,tag (,args)))) <span class="comment-delimiter">;</span><span class="comment">not quite!
+</span>    (<span class="keyword">if</span> end-tag
+        `(,@def ((,@all-args) <span class="type">&amp;body</span> content)
+             (,@call content))
+        `(,@def (,@all-args)
+             (,@call)))))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xhtml-generate-BROKEN a (class href id name style target title)))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xhtml-generate-BROKEN img (alt class src id name style) :end-tag nil))
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">warns: (xhtml-generate-BROKEN a (class href id name style target title))
+</span><span class="comment-delimiter">;; </span><span class="comment">fails: (macroexpand-1 '(a (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">fails: (macroexpand '(a (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">fails: (a (:href "link" :class "foo") "label")
+</span>
+
+<span class="comment-delimiter">;; </span><span class="comment">Despite the error, we won't fix it now.  Let's finish the rest.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Yes, this was meant to be a teaser, so you don't get bored in the middle.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">XHTML-GENERATE-BROKEN also shows, however, an inelegant use of
+</span><span class="comment-delimiter">;; </span><span class="comment">LET*, which many new to Lisp might use.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Because there are dependencies among local variables, it's
+</span><span class="comment-delimiter">;; </span><span class="comment">cleaner to use nested LETs instead.  This is done on further
+</span><span class="comment-delimiter">;; </span><span class="comment">examples below.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">The Lisp idiom is to use nested LETs (rather than LET*) which
+</span><span class="comment-delimiter">;; </span><span class="comment">highlights dependencies, making code easier to read.  One LET would
+</span><span class="comment-delimiter">;; </span><span class="comment">capture evaluation of the macro's parameters and an immediate inner
+</span><span class="comment-delimiter">;; </span><span class="comment">LET would then make use of those.
+</span>
+
+
+
+
+<span class="comment-delimiter">;; </span><span class="comment">Note: There is a subtle problem with the previous and next few
+</span><span class="comment-delimiter">;; </span><span class="comment">iterations of XML-ELEMENT.  In our rush to do yet more experiments
+</span><span class="comment-delimiter">;; </span><span class="comment">and premature optimization, we omitted additional test cases that
+</span><span class="comment-delimiter">;; </span><span class="comment">would have caught it.  Those familiar with HTML or XML may have
+</span><span class="comment-delimiter">;; </span><span class="comment">noticed.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">The code above wrongfully assumes existence of a closing tag.
+</span><span class="comment-delimiter">;; </span><span class="comment">This was actually caught later with test cases but mentioned here
+</span><span class="comment-delimiter">;; </span><span class="comment">for those who found the bug.  Because this type of programming
+</span><span class="comment-delimiter">;; </span><span class="comment">error is common, it's preserved as part of the exercise/experience.
+</span>
+
+
+
+
+
+
+
+<span class="comment-delimiter">;; </span><span class="comment">OPTIMIZATION:
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">If passed a constant string at compile-time, handle the
+</span><span class="comment-delimiter">;; </span><span class="comment">substitution immediately.  (Less to do at run-time!)
+</span>
+(<span class="keyword">defmacro</span> <span class="function-name">xml-element-optimization1</span> (tag (<span class="type">&amp;rest</span> key-value-pairs) <span class="type">&amp;body</span> content)
+  (<span class="keyword">let</span> ((tag-name (string-downcase (symbol-name tag)))
+        (args (<span class="keyword">loop</span> for (k v) on key-value-pairs by #'cddr
+                 collect (list (string-downcase (symbol-name k)) v))))
+    `(format nil
+             ,(identity            <span class="comment-delimiter">;</span><span class="comment">this isn't an idiom; it's a kludge
+</span>               `(concatenate
+                 'string
+                 <span class="string">"&lt;"</span> ,tag-name
+                 ,@(remove-if #'null <span class="comment-delimiter">;</span><span class="comment">see note about this #'remove-if further below
+</span>                              (mapcar #'(<span class="keyword">lambda</span> (x)
+                                          (<span class="keyword">if</span> (second x)
+                                              (<span class="keyword">typecase</span> (second x)
+                                                (string
+                                                 (concatenate 'string <span class="string">" "</span>
+                                                              (first x) <span class="string">"=\""</span> (second x) <span class="string">"\""</span>))
+                                                (otherwise
+                                                 (concatenate 'string <span class="string">" "</span>
+                                                              (first x) <span class="string">"=\"~A\""</span>)))))
+                                      args))
+                 <span class="string">"&gt;~A"</span>
+                 <span class="string">"&lt;/"</span> ,tag-name <span class="string">"&gt;"</span>)) <span class="comment-delimiter">;</span><span class="comment">wrongfully assumes content and closing tag
+</span>             ,@(remove-if #'null
+                          (mapcar #'(<span class="keyword">lambda</span> (x)
+                                      (<span class="keyword">if</span> (and (second x)
+                                               (not (subtypep (type-of (second x)) 'string)))
+                                          (second x)))
+                                  args))
+             ,@content)))
+
+<span class="comment-delimiter">;; </span><span class="comment">That's getting rather long, but we'll trim later.
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element-optimization1 :a (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element-optimization1 :a (:href "link" :class "foo") "label")
+</span>
+
+(<span class="keyword">defmacro</span> <span class="function-name">anchor6</span> ((<span class="type">&amp;rest</span> args <span class="type">&amp;key</span> class href id name style target title) <span class="type">&amp;body</span> content)
+  (<span class="keyword">declare</span> (ignore class href id name style target title))
+  `(xml-element-optimization1 <span class="builtin">:a</span> (,@args) ,@content))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(anchor6 (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 (macroexpand-1 '(anchor6 (:href "link" :class "foo") "label")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(anchor6 (:href "link" :class "foo") "label")
+</span><span class="comment-delimiter">;; </span><span class="comment">incorrect HTML but valid Lisp: (anchor6 () "label")
+</span><span class="comment-delimiter">;; </span><span class="comment">should fail: (anchor6 ("link" "foo") "label")
+</span>
+
+
+
+
+<span class="comment-delimiter">;; </span><span class="comment">OPTIMIZATION:
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Also handle case of constant CDATA ("label") at compile-time.
+</span>
+(<span class="keyword">defmacro</span> <span class="function-name">xml-element-WRONG</span> (tag (<span class="type">&amp;rest</span> key-value-pairs) <span class="type">&amp;body</span> content)
+  (<span class="keyword">let</span> ((tag-name (string-downcase (symbol-name tag)))
+        (args (<span class="keyword">loop</span> for (k v) on key-value-pairs by #'cddr
+                 collect (list (string-downcase (symbol-name k)) v)))
+        (cdata content))
+    `(format nil
+             ,(identity             <span class="comment-delimiter">;</span><span class="comment">when you see something like this 
+</span>               `(concatenate       <span class="comment-delimiter">;</span><span class="comment">it's time to break-out a new macro
+</span>                 'string
+                 <span class="string">"&lt;"</span> ,tag-name
+                 ,@(remove-if #'null
+                              (mapcar #'(<span class="keyword">lambda</span> (pair)
+                                          (<span class="keyword">let</span> ((a (first pair))
+                                                (b (second pair)))
+                                            (<span class="keyword">if</span> b
+                                                (<span class="keyword">typecase</span> b
+                                                  (string
+                                                   (concatenate 'string <span class="string">" "</span> a <span class="string">"=\""</span> b <span class="string">"\""</span>))
+                                                  (otherwise
+                                                   (concatenate 'string <span class="string">" "</span> a <span class="string">"=\"~A\""</span>))))))
+                                      args))
+                 <span class="comment-delimiter">;;</span><span class="comment">was:          "&gt;~A"
+</span>                 <span class="string">"&gt;"</span>
+                 ,(<span class="keyword">if</span> (subtypep (type-of cdata) 'string) <span class="comment-delimiter">;</span><span class="comment">wrong!
+</span>                      cdata
+                      <span class="string">"~A"</span>)
+                 <span class="string">"&lt;/"</span> ,tag-name <span class="string">"&gt;"</span>))
+             ,@(remove-if #'null
+                          (mapcar #'(<span class="keyword">lambda</span> (pair)
+                                      (<span class="keyword">let</span> ((b (second pair)))
+                                        (<span class="keyword">if</span> (and b
+                                                 (not (subtypep (type-of b) 'string)))
+                                            b)))
+                                  args))
+             <span class="comment-delimiter">;;</span><span class="comment">was:          ,@content)))
+</span>             ,@(<span class="keyword">if</span> (not (subtypep (type-of cdata) 'string)) <span class="comment-delimiter">;</span><span class="comment">still wrong!
+</span>                   cdata))))
+
+<span class="comment-delimiter">;; </span><span class="comment">Way too long!
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element-WRONG :a (:href "link" :class "foo") "label"))
+</span>
+
+
+<span class="comment-delimiter">;; </span><span class="comment">Corrected: realizing that &amp;body param is a CONS
+</span>
+(<span class="keyword">defmacro</span> <span class="function-name">xml-element-KINDA-WORKS</span> (tag (<span class="type">&amp;rest</span> key-value-pairs) <span class="type">&amp;body</span> content)
+  <span class="doc">"Works... but only when a closing tag is required; not for &lt;IMG ... /&gt;"</span>
+  (<span class="keyword">let</span> ((tag-name (string-downcase (symbol-name tag)))
+        (args (<span class="keyword">loop</span> for (k v) on key-value-pairs by #'cddr
+                 collect (list (string-downcase (symbol-name k)) v)))
+        (cdata-string (<span class="keyword">if</span> (and (eql (type-of content) 'cons)
+                               (= (length content) 1)
+                               (subtypep (type-of (first content)) 'string))
+                          (first content))))
+    `(format nil
+             ,(identity              <span class="comment-delimiter">;</span><span class="comment">identity hack is still a problem
+</span>               `(concatenate
+                 'string
+                 <span class="string">"&lt;"</span> ,tag-name
+                 ,@(remove-if #'null
+                              (mapcar #'(<span class="keyword">lambda</span> (pair)
+                                          (<span class="keyword">let</span> ((a (first pair))
+                                                (b (second pair)))
+                                            (<span class="keyword">if</span> b
+                                                (<span class="keyword">typecase</span> b
+                                                  (string
+                                                   (concatenate 'string <span class="string">" "</span> a <span class="string">"=\""</span> b <span class="string">"\""</span>))
+                                                  (otherwise
+                                                   (concatenate 'string <span class="string">" "</span> a <span class="string">"=\"~A\""</span>))))))
+                                      args))
+                 <span class="string">"&gt;"</span> 
+                 ,(<span class="keyword">if</span> cdata-string
+                      cdata-string
+                      <span class="string">"~A"</span>)
+                 <span class="string">"&lt;/"</span> ,tag-name <span class="string">"&gt;"</span>))
+             ,@(remove-if #'null
+                          (mapcar #'(<span class="keyword">lambda</span> (pair)
+                                      (<span class="keyword">let</span> ((b (second pair)))
+                                        (<span class="keyword">if</span> (and b
+                                                 (not (subtypep (type-of b) 'string)))
+                                            b)))
+                                  args))
+             ,@(<span class="keyword">if</span> (not cdata-string)
+                   content))))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element-KINDA-WORKS :a (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element-KINDA-WORKS :a (:href "link" :class "foo") (concatenate 'string "label")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element-KINDA-WORKS :a (:href "link" :class "foo") (lambda () "label")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element-KINDA-WORKS :a (:href "link" :class "foo") "label")
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element-KINDA-WORKS :a (:href "link" :class "foo") (concatenate 'string "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element-KINDA-WORKS :a (:href "link" :class "foo") (lambda () "label"))
+</span>
+
+<span class="comment-delimiter">;; </span><span class="comment">It works... mostly!  There's still a problem: for XHTML where a
+</span><span class="comment-delimiter">;; </span><span class="comment">closing tag is forbidden (such as with BASE, BR, HR, IMG and META),
+</span><span class="comment-delimiter">;; </span><span class="comment">but enough already!  The code above is long and bulky...
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">In pre-ANSI Lisp days, terminals had typically 24-25 lines.  While
+</span><span class="comment-delimiter">;; </span><span class="comment">we have more screen real estate now, it's still best to keep a
+</span><span class="comment-delimiter">;; </span><span class="comment">function or macro to fit well within a typical frame.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Time to break-out inner functionality as separate functions...
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">These are functions rather than macros because they get called at
+</span><span class="comment-delimiter">;; </span><span class="comment">compile-time.  Since there's nothing gained by making them macros,
+</span><span class="comment-delimiter">;; </span><span class="comment">we'll keep with simplicity of functions.
+</span>
+(<span class="keyword">defun</span> <span class="function-name">extract-attribute-pairs</span> (key-value-pairs)
+  <span class="doc">"Create XML attributes.
+If key/value pair are both constant strings, resolve immediately.
+If value is anything else (i.e., computed at run-time), create FORMAT pattern.
+See also #'extract-nonconst-variables."</span>
+  (mapcar #'(<span class="keyword">lambda</span> (pair)
+              (<span class="keyword">let</span> ((key (first pair))
+                    (value (second pair)))
+                (<span class="keyword">if</span> value
+                    (<span class="keyword">typecase</span> value <span class="comment-delimiter">;</span><span class="comment">using #'constantp would have been too broad
+</span>                      (number (format nil <span class="string">" ~A=\"~A\""</span> key value))
+                      (string (concatenate 'string <span class="string">" "</span> key <span class="string">"=\""</span> value <span class="string">"\""</span>))
+                      (otherwise (concatenate 'string <span class="string">" "</span> key <span class="string">"=\"~A\""</span>))))))
+          key-value-pairs))
+<span class="comment-delimiter">;; </span><span class="comment">(extract-attribute-pairs '(("A" 1) ("B" "b") ("C" (identity "c"))))
+</span><span class="comment-delimiter">;; </span><span class="comment">Note lack of nil in results in preceding line.
+</span>
+(<span class="keyword">defun</span> <span class="function-name">extract-nonconst-values</span> (key-value-pairs)
+  <span class="doc">"Create parameter list for FORMAT pattern generated by #'extract-attribute-pairs"</span>
+  (mapcar #'(<span class="keyword">lambda</span> (pair)
+              <span class="comment-delimiter">;; </span><span class="comment">ignore first element of pair
+</span>              (<span class="keyword">let</span> ((value (second pair)))
+                (<span class="keyword">if</span> (and value
+                         (not (subtypep (type-of value) 'number))
+                         (not (subtypep (type-of value) 'string)))
+                    value)))
+          key-value-pairs))
+<span class="comment-delimiter">;; </span><span class="comment">(extract-nonconst-values '(("A" 1) ("B" "b") ("C" (identity "c"))))
+</span><span class="comment-delimiter">;; </span><span class="comment">Same input as above, yet we preserve nil in results.
+</span>
+(<span class="keyword">defmacro</span> <span class="function-name">xml-element-ALMOST</span> (tag (<span class="type">&amp;rest</span> key-value-pairs) <span class="type">&amp;body</span> content)
+  <span class="doc">"Generate XHTML/XML element with attributes and CDATA.
+Parameters containing constant strings receive compile-time
+optimization and become part of the static string for run-time."</span>
+  (<span class="keyword">let</span> ((tag-name (string-downcase (symbol-name tag)))
+        (args (<span class="keyword">loop</span> for (k v) on key-value-pairs by #'cddr
+                 collect (list (string-downcase (symbol-name k)) v)))
+        (cdata content))
+    (<span class="keyword">let</span> ((cdata-string (<span class="keyword">if</span> (and (eql (type-of content) 'cons)
+                                 (= (length content) 1)
+                                 (subtypep (type-of (first content)) 'string))
+                            (first content))))
+      `(format nil
+               ,(identity             <span class="comment-delimiter">;</span><span class="comment">tired of this IDENTITY bug yet?
+</span>                 `(concatenate 'string <span class="string">"&lt;"</span> ,tag-name
+                               <span class="comment-delimiter">;;</span><span class="comment">Ah ha!  This #'remove-if does nothing for us:
+</span>                               <span class="comment-delimiter">;;</span><span class="comment">,@(remove-if #'null (extract-const-pairs args))
+</span>                               ,@(extract-attribute-pairs args)
+                               <span class="string">"&gt;"</span>
+                               <span class="comment-delimiter">;; </span><span class="comment">Still need to fix for forbidden closing tag!
+</span>                               ,(<span class="keyword">if</span> cdata-string
+                                    cdata-string
+                                    <span class="string">"~A"</span>)
+                               <span class="string">"&lt;/"</span> ,tag-name <span class="string">"&gt;"</span>)) 
+               ,@(remove-if #'null (extract-nonconst-values args))
+               ,@(<span class="keyword">if</span> (not cdata-string)
+                     cdata)))))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element-ALMOST :a (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element-ALMOST :a (:href "link" :class "foo") (concatenate 'string "label")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element-ALMOST :a (:href "link" :class "foo") (lambda () "label")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element-ALMOST :a (:href "link" :class "foo") "label")
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element-ALMOST :a (:href "link" :class "foo") (concatenate 'string "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element-ALMOST :a (:href "link" :class "foo") (lambda () "label"))
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Note nested LET to highlight interdependence among local variables.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">The ,(IDENTITY `(CONCATENATE ...)) nonsense isn't working for us.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">We still have a quoted CONCATENATE, which gets run at run-time
+</span><span class="comment-delimiter">;; </span><span class="comment">rather than compile time.  What to do?  The architecture is wrong.
+</span>
+
+(<span class="keyword">defmacro</span> <span class="function-name">anchor</span> ((<span class="type">&amp;rest</span> args <span class="type">&amp;key</span> class href id name style target title)
+                  <span class="type">&amp;body</span> content)
+  <span class="doc">"Generate XHTML &lt;A&gt; tag"</span>
+  (<span class="keyword">declare</span> (ignore class href id name style target title))
+  `(xml-element-ALMOST <span class="builtin">:a</span> (,@args) ,@content))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(anchor (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 (macroexpand-1 '(anchor (:href "link" :class "foo") "label")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(anchor (:href "link" :class "foo") "label")
+</span><span class="comment-delimiter">;; </span><span class="comment">invalid HTML but valid Lisp: (anchor () "label")
+</span><span class="comment-delimiter">;; </span><span class="comment">should fail: (anchor ("link" "foo") "label")
+</span>
+
+
+
+
+
+
+<span class="comment-delimiter">;; </span><span class="comment">While thinking about how to fix the compile-time versus run-time
+</span><span class="comment-delimiter">;; </span><span class="comment">business, there's a feature that should be added in case we want to
+</span><span class="comment-delimiter">;; </span><span class="comment">use this as-is: a parameter for the stream.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">When deciding the aesthetics of such an argument, consider
+</span><span class="comment-delimiter">;; </span><span class="comment">mimicking an existing Common Lisp function.  Since the semantics
+</span><span class="comment-delimiter">;; </span><span class="comment">of our macro are closest to FORMAT, use that.  (Suggestion: place
+</span><span class="comment-delimiter">;; </span><span class="comment">this arg before all other args for consistency with FORMAT.)
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Passing nil, we get the same behavior as before.  Passing t, we
+</span><span class="comment-delimiter">;; </span><span class="comment">get standard output.  Passing a stream handle, we push the
+</span><span class="comment-delimiter">;; </span><span class="comment">complexity of allocation/gc down to the OS level, and we suddenly
+</span><span class="comment-delimiter">;; </span><span class="comment">have re-entrant code (useful for long-running processes).
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">(defmacro xml-element (STREAM tag (&amp;rest key-value-pairs) &amp;body content)
+</span><span class="comment-delimiter">;;   </span><span class="comment">...                  ^^^^^^
+</span><span class="comment-delimiter">;;    </span><span class="comment">`(format ,STREAM
+</span><span class="comment-delimiter">;;       </span><span class="comment">...   ^^^^^^^
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Or we could use a dynamic/special (i.e., global) variable.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Using semantics consistent with FORMAT and PRINC, let's introduce
+</span><span class="comment-delimiter">;; </span><span class="comment">*stream* via DEFVAR.
+</span>
+
+(<span class="keyword">defvar</span> <span class="variable-name">*stream*</span> t <span class="doc">"semantics are consistent with FORMAT and PRINC"</span>)
+
+
+
+
+
+
+<span class="comment-delimiter">;; </span><span class="comment">Next, we need to break-out additional functions for the
+</span><span class="comment-delimiter">;; </span><span class="comment">compile-time concatenation of those strings.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">We'll continue using the same versions of #'extract-attribute-pairs
+</span><span class="comment-delimiter">;; </span><span class="comment">and #'extract-nonconst-values defined above.
+</span>
+(<span class="keyword">defun</span> <span class="function-name">build-attributes-string</span> (attributes-list <span class="type">&amp;optional</span> (collector <span class="string">""</span>))
+  <span class="doc">"Converts list from #'extract-attribute-pairs into string for FORMAT"</span>
+  (<span class="keyword">if</span> (null attributes-list)
+      collector
+      (<span class="keyword">let</span> ((attribute (pop attributes-list)))
+        (build-attributes-string attributes-list
+                                 (concatenate 'string collector attribute)))))
+
+<span class="comment-delimiter">;; </span><span class="comment">(build-attributes-string '(" A=\"1\"" " B=\"b\""))
+</span><span class="comment-delimiter">;; </span><span class="comment">This is similar to how we'll actually use it:
+</span><span class="comment-delimiter">;; </span><span class="comment">(build-attributes-string (extract-attribute-pairs '(("A" 1) ("B" "b") ("C" (identity "c")))))
+</span>
+(<span class="keyword">defmacro</span> <span class="function-name">xml-element</span> (tag (<span class="type">&amp;rest</span> key-value-pairs) <span class="type">&amp;body</span> content)
+  <span class="doc">"Generate XML element with attributes and CDATA.
+Parameters containing constant strings receive compile-time
+optimization and become part of the static string for run-time."</span>
+  (<span class="keyword">let</span> ((tag-name (string-downcase (symbol-name tag)))
+        (args (<span class="keyword">loop</span> for (k v) on key-value-pairs by #'cddr
+                 collect (list (string-downcase (symbol-name k)) v)))
+        (cdata content))
+    (<span class="keyword">let</span> ((cdata-string (<span class="keyword">if</span> (and cdata
+                                 (eql (type-of cdata) 'cons)
+                                 (= (length cdata) 1)
+                                 (subtypep (type-of (first cdata)) 'string))
+                            (first cdata))))
+      `(format *stream*
+               ,(concatenate 'string <span class="string">"&lt;"</span> tag-name
+                             (build-attributes-string (extract-attribute-pairs args))
+                             (<span class="keyword">if</span> cdata
+                                 (<span class="keyword">if</span> cdata-string
+                                     (concatenate 'string <span class="string">"&gt;"</span> cdata-string <span class="string">"&lt;/"</span> tag-name <span class="string">"&gt;"</span>)
+                                     (concatenate 'string <span class="string">"&gt;~A&lt;/"</span> tag-name <span class="string">"&gt;"</span>))
+                                 <span class="string">" /&gt;"</span>))
+               ,@(remove-if #'null (extract-nonconst-values args))
+               ,@(<span class="keyword">if</span> cdata
+                     (<span class="keyword">if</span> (not cdata-string)
+                         cdata))))))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element :a (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element :img (:src "x.png" :alt "X" :class "foo")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element :a (:href "link" :class "foo") (concatenate 'string "label")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-element :a (:href "link" :class "foo") (identity "label")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element :a (:href "link" :class "foo") "label")
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element :img (:src "x.png" :alt "X" :class "foo"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element :a (:href "link" :class "foo") (identity "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-element :a (:href "link" :class "foo") (concatenate 'string "label"))
+</span>
+
+
+(<span class="keyword">defmacro</span> <span class="function-name">anchor</span> ((<span class="type">&amp;rest</span> args <span class="type">&amp;key</span> class href id name style target title) <span class="type">&amp;body</span> content)
+  (<span class="keyword">declare</span> (ignore class href id name style target title))
+  `(xml-element <span class="builtin">:a</span> (,@args) ,@content))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(anchor (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 (macroexpand-1 '(anchor (:href "link" :class "foo") "label")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(anchor (:href "link" :class "foo") "label")
+</span><span class="comment-delimiter">;; </span><span class="comment">invalid HTML, valid Lisp: (anchor () "label")
+</span><span class="comment-delimiter">;; </span><span class="comment">should fail: (anchor ("link" "foo") "label")
+</span>
+<span class="slime-reader-conditional">#+(or) ;;note: #+(or) makes a block comment
+(progn
+  (defmacro a ((&amp;rest args &amp;key class href id name style target title) &amp;body content)
+    "anchor"
+    (declare (ignore class href id name style target title))
+    `(xml-element :a (,@args) ,@content))
+  
+  (defmacro b ((&amp;rest args &amp;key id name) &amp;body content)
+    "bold"
+    (declare (ignore id name))
+    `(xml-element :b (,@args) ,@content))
+
+  (defmacro blockquote ((&amp;rest args &amp;key class id name style) &amp;body content)
+    "blockquote"
+    (declare (ignore class id name name style))
+    `(xml-element :blockquote (,@args) ,@content))
+
+  (defmacro i ((&amp;rest args &amp;key id name) &amp;body content)
+    "italics"
+    (declare (ignore id name))
+    `(xml-element :i (,@args) ,@content))
+
+  (defmacro em ((&amp;rest args &amp;key id name) &amp;body content)
+    "emphasis"
+    (declare (ignore id name))
+    `(xml-element :em (,@args) ,@content))
+
+  (defmacro p ((&amp;rest args &amp;key class id name style) &amp;body content)
+    "paragraph"
+    (declare (ignore class id name name style))
+    `(xml-element :p (,@args) ,@content)))</span>
+
+
+
+
+
+
+
+
+
+<span class="comment-delimiter">;; </span><span class="comment">Back to the macro-generation macro...
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">"hmm... seems easy enough to generate various HTML tags from a spec..."
+</span><span class="comment-delimiter">;; </span><span class="comment">apart from double-backquoted-nested-comma madness.
+</span><span class="comment-delimiter">;; </span><span class="comment">When you see this: ,',  think of the 1950-60's "fallout" shelter sign :-)
+</span><span class="comment-delimiter">;; </span><span class="comment"><a href="http://bc.tech.coop/blog/041205.html">http://bc.tech.coop/blog/041205.html</a>
+</span><span class="comment-delimiter">;; </span><span class="comment"><a href="http://google.com/search?q=lisp+macro+backquote+nested+comma">http://google.com/search?q=lisp+macro+backquote+nested+comma</a>
+</span>
+(<span class="keyword">defmacro</span> <span class="function-name">xhtml-generate</span> (tag-name (<span class="type">&amp;rest</span> attributes) <span class="type">&amp;key</span> (end-tag t))
+  <span class="doc">"Generate a macro that in turn creates one XHTML tag.
+This might become the inner workings of a DTD-to-lisp code generation facility."</span>
+  (<span class="keyword">let</span> ((tag tag-name)
+        (attrs attributes))
+    (<span class="keyword">let</span> ((def `(<span class="keyword">defmacro</span> ,tag))
+          (all-args `(<span class="type">&amp;rest</span> args <span class="type">&amp;key</span> ,@attrs))
+          (ignore `(<span class="keyword">declare</span> (ignore ,@attrs)))
+          <span class="comment-delimiter">;; </span><span class="comment">the tricky bits: `` and , versus ,', and so on...
+</span>          (call-sans-cdata ``(xml-element ,',tag (,@args)))
+          (call-with-cdata ``(xml-element ,',tag (,@args) ,@content)))
+      (<span class="keyword">if</span> end-tag
+          `(,@def (,all-args <span class="type">&amp;body</span> content)
+               ,ignore
+             (,@call-with-cdata))
+          <span class="comment-delimiter">;;</span><span class="comment">`(,@def ,all-args   ;Aesthetic alternative but inconsistent API
+</span>          `(,@def (,all-args)    <span class="comment-delimiter">;</span><span class="comment">Extra parens redundant without &amp;body
+</span>               ,ignore
+             (,@call-sans-cdata))))))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xhtml-generate a (class href id name style target title)))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xhtml-generate img (alt class id name src style) :end-tag nil))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand '(xhtml-generate a (class href id name style target title)))
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">(xhtml-generate a (class href id name style target title))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(a (:href "link" :class "foo") "label"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(a (:href "link" :class "foo") "label")
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">(xhtml-generate img (alt class id name src style) :end-tag nil)
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(img (:alt "X" :src "x.png" :class "foo")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(img (:alt "X" :src "x.png" :class "foo"))
+</span>
+<span class="comment-delimiter">;;; </span><span class="comment">Alternate example:
+</span><span class="comment-delimiter">;;; </span><span class="comment">Considering the code comment on "Aesthetic alternative" above such as
+</span><span class="comment-delimiter">;;; </span><span class="comment">for tags without &amp;body, try applying the commented `(,@def ,all-args
+</span><span class="comment-delimiter">;;; </span><span class="comment">line [and commenting the line which follows it], then try these:
+</span><span class="comment-delimiter">;; </span><span class="comment">(xhtml-generate img (alt class id name src style) :end-tag nil)
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(img :alt "X" :src "x.png" :class "foo"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(img :alt "X" :src "x.png" :class "foo")
+</span>
+<span class="slime-reader-conditional">#+(or) (macroexpand-1 '(a (:href "link" :class "foo")
+                        (img (:alt "X" :src "x.png" :class "foo"))))</span>
+<span class="slime-reader-conditional">#+(or) (macroexpand '(a (:href "link" :class "foo")
+                      (img (:alt "X" :src "x.png" :class "foo"))))</span>
+<span class="comment-delimiter">;; </span><span class="comment">if *stream* was t, this would render out of sequence:
+</span><span class="slime-reader-conditional">#+(or) (let ((*stream* nil))
+         (a (:href "link" :class "foo")
+           (img (:alt "X" :src "x.png" :class "foo"))))</span>
+
+
+
+<span class="comment-delimiter">;; </span><span class="comment">Try some experiments of changing the internal double backquote
+</span><span class="comment-delimiter">;; </span><span class="comment">combinations, and read more on the topic someday.  In particular,
+</span><span class="comment-delimiter">;; </span><span class="comment">Paul Graham's _On Lisp_ is considered a must-read on the subject of
+</span><span class="comment-delimiter">;; </span><span class="comment">advanced macros!
+</span>
+
+(xhtml-generate a (class href id name style target title))
+(xhtml-generate abbr (class id name style))
+(xhtml-generate acronym (class id name style))
+(xhtml-generate b (class id name style))
+(xhtml-generate base (href target))
+(xhtml-generate big (class id name style))
+(xhtml-generate blockquote (class id name style))
+(xhtml-generate br (class id name style) <span class="builtin">:end-tag</span> nil)
+(xhtml-generate cite (class id name style))
+(xhtml-generate code (class id name style))
+(xhtml-generate dd (class id name style))
+(xhtml-generate dfn (class id name style))
+(xhtml-generate div (class id name style))
+(xhtml-generate dl (class id name style))
+(xhtml-generate dt (class id name style))
+(xhtml-generate em (class id name style))
+(xhtml-generate hr (class id name style) <span class="builtin">:end-tag</span> nil)
+(xhtml-generate i (class id name style))
+(xhtml-generate img (alt class height id name src style width title) <span class="builtin">:end-tag</span> nil)
+(xhtml-generate kbd (class id name style))
+(xhtml-generate ol (class id name style))
+(xhtml-generate ul (class id name style))
+(xhtml-generate li (class id name style))
+(xhtml-generate object (alt class height id name src style width title))
+(xhtml-generate p (class id name style))
+(xhtml-generate pre (class id name style))
+(xhtml-generate q (class id name style))
+(xhtml-generate samp (class id name style))
+(xhtml-generate small (class id name style))
+(xhtml-generate span (class id name style))
+(xhtml-generate strong (class id name style))
+(xhtml-generate sub (class id name style))
+(xhtml-generate sup (class id name style))
+(xhtml-generate tt (class id name style))
+(xhtml-generate var (class id name style))
+
+<span class="comment-delimiter">;; </span><span class="comment">Next, consider using #'read and custom symbol macros to parse the
+</span><span class="comment-delimiter">;; </span><span class="comment">official W3.org DTD for XHTML.  One way might be to then capture
+</span><span class="comment-delimiter">;; </span><span class="comment">the Lisp code that gets generated and incorporate that resulting
+</span><span class="comment-delimiter">;; </span><span class="comment">.lisp file into your code repository.
+</span>
+
+
+
+
+
+<span class="comment-delimiter">;; </span><span class="comment">Back to our library...
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">The above code assumes that you have a single s-expression for your
+</span><span class="comment-delimiter">;; </span><span class="comment">entire HTML file.  In some cases, that's fine.  In other
+</span><span class="comment-delimiter">;; </span><span class="comment">situations, you want to start shoving bits down the wire as soon as
+</span><span class="comment-delimiter">;; </span><span class="comment">possible.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">For that immediate mode, you'll need explicit open and close
+</span><span class="comment-delimiter">;; </span><span class="comment">routines.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">While we're here, let's make the close macro optionally close all
+</span><span class="comment-delimiter">;; </span><span class="comment">currently opened tags.  This extra feature might be an additional
+</span><span class="comment-delimiter">;; </span><span class="comment">iteration for some, but others might be comfortable by now with
+</span><span class="comment-delimiter">;; </span><span class="comment">taking-on these features in one step.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">This stack of closing tags should be relative so that an inner
+</span><span class="comment-delimiter">;; </span><span class="comment">portion of your program can close all of its opened tags without
+</span><span class="comment-delimiter">;; </span><span class="comment">closing the entire document.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Be aware that this is the wrong implementation for the above
+</span><span class="comment-delimiter">;; </span><span class="comment">criteria!
+</span>
+(<span class="keyword">let</span> (element-stack-to-be-closed)       <span class="comment-delimiter">; </span><span class="comment">not quite!
+</span>  
+  (<span class="keyword">defpackage</span> <span class="type">:html-tag-namespace</span>)      <span class="comment-delimiter">; </span><span class="comment">for INTERNed tag names
+</span>  
+  (<span class="keyword">defmacro</span> <span class="function-name">xml-open-element</span> (tag (<span class="type">&amp;rest</span> key-value-pairs))
+    <span class="doc">"Allow incomplete structure to begin being sent to *stream*.
+That is, start sending data down the wire even without a full
+sexp to support on-the-fly generation of content.
+See also: #'xml-close-element."</span>
+    (<span class="keyword">let</span> ((tag-name (string-downcase (symbol-name tag)))
+          (args (<span class="keyword">loop</span> for (k v) on key-value-pairs by #'cddr
+                   collect (list (string-downcase (symbol-name k)) v))))
+      (push (intern tag-name <span class="builtin">:html-tag-namespace</span>) element-stack-to-be-closed)
+      `(format *stream*
+               ,(concatenate 'string <span class="string">"&lt;"</span> tag-name
+                             (build-attributes-string (extract-attribute-pairs args))
+                             <span class="string">"&gt;"</span>)
+               ,@(remove-if #'null (extract-nonconst-values args)))))
+
+  (<span class="keyword">defmacro</span> <span class="function-name">xml-close-element</span> (<span class="type">&amp;optional</span> (tag nil tag?))
+    <span class="doc">"Complements #'xml-open-element.  Omitting tag name closes all."</span>
+    (<span class="keyword">if</span> tag?
+        (<span class="keyword">let</span> ((tag-name (string-downcase (symbol-name tag))))
+          (<span class="keyword">if</span> (eq (intern tag-name <span class="builtin">:html-tag-namespace</span>)
+                  (first element-stack-to-be-closed))
+              (pop element-stack-to-be-closed)
+              (<span class="warning">error</span> <span class="string">"&lt;~A&gt; tag must be closed first"</span> (first element-stack-to-be-closed)))
+          `(princ ,(concatenate 'string <span class="string">"&lt;/"</span> tag-name <span class="string">"&gt;"</span>)  *stream*))
+        (<span class="keyword">labels</span> ((build-string (stack <span class="type">&amp;optional</span> (collector <span class="string">""</span>))
+                   (<span class="keyword">if</span> (null stack)
+                       collector
+                       (<span class="keyword">let</span> ((tag-name (string-downcase (pop stack))))
+                         (build-string stack
+                                       (concatenate 'string collector <span class="string">"&lt;/"</span> tag-name <span class="string">"&gt;"</span>))))))
+          `(princ ,(build-string element-stack-to-be-closed) *stream*))))
+
+  (<span class="keyword">defun</span> <span class="function-name">dump-tags-to-be-closed</span> ()
+    (<span class="keyword">dolist</span> (tag element-stack-to-be-closed)
+      (format t <span class="string">"to be closed: &lt;~A&gt;~%"</span> tag))))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-open-element :div (:id "tag" :class "foo")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-open-element :div (:id "tag" :class "foo"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-open-element :p (:id "para" :class "moo"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(dump-tags-to-be-closed)
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-close-element :p))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-close-element :div))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-close-element))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 (macroexpand-1 '(xml-close-element)))
+</span><span class="comment-delimiter">;; </span><span class="comment">should complain: (xml-close-element :p)
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-close-element :div)
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-close-element)
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">The approach above is a common mistake when those new to Lisp have
+</span><span class="comment-delimiter">;; </span><span class="comment">read more pages of books on the subject than have written lines of
+</span><span class="comment-delimiter">;; </span><span class="comment">Lisp code.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">It's close-- with those functions defined within a LET-- but not
+</span><span class="comment-delimiter">;; </span><span class="comment">quite what we need.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">First, review what's there and what works.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Because no local closures are used within #'xml-close-element
+</span><span class="comment-delimiter">;; </span><span class="comment">(everything it needs gets passed as a parameter), we don't
+</span><span class="comment-delimiter">;; </span><span class="comment">necessarily have to define it via LABELS.  It could be a
+</span><span class="comment-delimiter">;; </span><span class="comment">stand-alone function, and by the time we get to the pretty-printer,
+</span><span class="comment-delimiter">;; </span><span class="comment">it may just be broken-out.  Keeping it there, however, helps
+</span><span class="comment-delimiter">;; </span><span class="comment">illustrate the thought process.
+</span>
+(<span class="keyword">defun</span> <span class="function-name">test-page-LAME</span> ()
+  (xml-open-element <span class="builtin">:html</span>
+                    (<span class="builtin">:xmlns</span> <span class="string">"http://www.w3.org/1999/xhtml"</span> <span class="builtin">:lang</span> <span class="string">"en"</span>))
+  (xml-open-element <span class="builtin">:body</span> ())
+  <span class="comment-delimiter">;; </span><span class="comment">this closure is lame because its use is hidden and compiler might complain:
+</span>  (<span class="keyword">let</span> (element-stack-to-be-closed)
+    (xml-open-element <span class="builtin">:div</span> (<span class="builtin">:id</span> <span class="string">"tag"</span> <span class="builtin">:class</span> <span class="string">"foo"</span>))
+    (xml-open-element <span class="builtin">:p</span> (<span class="builtin">:id</span> <span class="string">"para"</span> <span class="builtin">:class</span> <span class="string">"moo"</span>))
+    (format *stream* <span class="string">"text"</span>)
+    (xml-close-element))
+  (xml-close-element)
+  <span class="comment-delimiter">;; </span><span class="comment">return nil indicating side-effects:
+</span>  nil)
+
+<span class="comment-delimiter">;; </span><span class="comment">(test-page-LAME)
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Note that the &lt;html&gt; tag is incomplete!
+</span><span class="comment-delimiter">;; </span><span class="comment">it should look like this:
+</span><span class="comment-delimiter">;; </span><span class="comment">&lt;html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en"&gt;
+</span><span class="comment-delimiter">;; </span><span class="comment">So we're missing an attribute called "xml:lang" with value "en".
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">We'll have to address that later!
+</span>
+
+
+<span class="comment-delimiter">;; </span><span class="comment">Move the lexical variable to become dynamic/special, and you've fixed it.
+</span>
+(<span class="keyword">defvar</span> <span class="variable-name">*element-stack-to-be-closed*</span> nil
+  <span class="doc">"For every tag we open with #'xml-open-element, make sure we close in correct order."</span>)
+
+(<span class="keyword">defpackage</span> <span class="type">:html-tag-namespace</span>)        <span class="comment-delimiter">; </span><span class="comment">for INTERNed tag names
+</span>  
+(<span class="keyword">defmacro</span> <span class="function-name">xml-open-element</span> (tag (<span class="type">&amp;rest</span> key-value-pairs))
+  <span class="doc">"Allow incomplete structure to begin being sent to *stream*.
+That is, start sending data down the wire even without a full
+sexp to support on-the-fly generation of content.
+See also: #'xml-close-element."</span>
+  (<span class="keyword">let</span> ((tag-name (string-downcase (symbol-name tag)))
+        (args (<span class="keyword">loop</span> for (k v) on key-value-pairs by #'cddr
+                 collect (list (string-downcase (symbol-name k)) v))))
+    (push (intern tag-name <span class="builtin">:html-tag-namespace</span>) *element-stack-to-be-closed*)
+    `(format *stream*
+             ,(concatenate 'string <span class="string">"&lt;"</span> tag-name
+                           (build-attributes-string (extract-attribute-pairs args))
+                           <span class="string">"&gt;"</span>)
+             ,@(remove-if #'null (extract-nonconst-values args)))))
+
+(<span class="keyword">defmacro</span> <span class="function-name">xml-close-element</span> (<span class="type">&amp;optional</span> (tag nil tag?))
+  <span class="doc">"Complements #'xml-open-element.  Omitting tag name closes all."</span>
+  (<span class="keyword">if</span> tag?
+      (<span class="keyword">let</span> ((tag-name (string-downcase (symbol-name tag))))
+        (<span class="keyword">if</span> (eq (intern tag-name <span class="builtin">:html-tag-namespace</span>)
+                (first *element-stack-to-be-closed*))
+            (pop *element-stack-to-be-closed*)
+            (<span class="warning">error</span> <span class="string">"&lt;~A&gt; tag must be closed first"</span> (first *element-stack-to-be-closed*)))
+        `(format *stream* ,(concatenate 'string <span class="string">"&lt;/"</span> tag-name <span class="string">"&gt;"</span>)))
+      (<span class="keyword">labels</span> ((build-string (<span class="type">&amp;optional</span> (collector <span class="string">""</span>))
+                 (<span class="keyword">if</span> (null *element-stack-to-be-closed*)
+                     collector
+                     (<span class="keyword">let</span> ((tag-name (string-downcase (pop *element-stack-to-be-closed*))))
+                       (build-string (concatenate 'string collector <span class="string">"&lt;/"</span> tag-name <span class="string">"&gt;"</span>))))))
+        `(format *stream* ,(build-string)))))
+
+(<span class="keyword">defun</span> <span class="function-name">dump-tags-to-be-closed</span> ()
+  (<span class="keyword">dolist</span> (tag *element-stack-to-be-closed*)
+    (format t <span class="string">"to be closed: &lt;~A&gt;~%"</span> tag)))
+
+<span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-open-element :div (:id "tag" :class "foo")))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-open-element :div (:id "tag" :class "foo"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-open-element :p (:id "para" :class "moo"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(dump-tags-to-be-closed)
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-close-element :p))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-close-element :div))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 '(xml-close-element))
+</span><span class="comment-delimiter">;; </span><span class="comment">(macroexpand-1 (macroexpand-1 '(xml-close-element)))
+</span><span class="comment-delimiter">;; </span><span class="comment">(dump-tags-to-be-closed)
+</span><span class="comment-delimiter">;; </span><span class="comment">should complain: (xml-close-element :p)
+</span><span class="comment-delimiter">;; </span><span class="comment">should complain: (xml-close-element :div)
+</span><span class="comment-delimiter">;; </span><span class="comment">(xml-close-element)
+</span><span class="comment-delimiter">;; </span><span class="comment">(dump-tags-to-be-closed)
+</span>
+(<span class="keyword">defun</span> <span class="function-name">test-page</span> ()
+  (xml-open-element <span class="builtin">:html</span> (<span class="builtin">:xmlns</span> <span class="string">"http://www.w3.org/1999/xhtml"</span> <span class="builtin">:lang</span> <span class="string">"en"</span>))
+  (xml-open-element <span class="builtin">:body</span> ())
+  (<span class="keyword">let</span> (*element-stack-to-be-closed*)
+    (xml-open-element <span class="builtin">:div</span> (<span class="builtin">:id</span> <span class="string">"tag"</span> <span class="builtin">:class</span> <span class="string">"foo"</span>))
+    (xml-open-element <span class="builtin">:p</span> (<span class="builtin">:id</span> <span class="string">"para"</span> <span class="builtin">:class</span> <span class="string">"moo"</span>))
+    (format *stream* <span class="string">"text"</span>)
+    (xml-close-element))
+  (xml-close-element)
+  <span class="comment-delimiter">;; </span><span class="comment">return nil indicating side-effects:
+</span>  nil)
+
+<span class="comment-delimiter">;; </span><span class="comment">(test-page)
+</span><span class="comment-delimiter">;; </span><span class="comment">(dump-tags-to-be-closed)
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Experiment: comment-out one of the two #'xml-close-element calls
+</span><span class="comment-delimiter">;; </span><span class="comment">sequentially, and see what fails each time.
+</span>
+                                        <span class="comment-delimiter">;</span><span class="comment">(xml-close-element :p)
+</span>                                        <span class="comment-delimiter">;</span><span class="comment">(xml-close-element :div)
+</span>                                        <span class="comment-delimiter">;</span><span class="comment">(xml-close-element :body)
+</span>                                        <span class="comment-delimiter">;</span><span class="comment">(xml-close-element :html)
+</span>
+
+<span class="comment-delimiter">;; </span><span class="comment">Note that #'test-page specifically DOESN'T create the following
+</span><span class="comment-delimiter">;; </span><span class="comment">structures.  (Otherwise, the entire s-expression would have to be
+</span><span class="comment-delimiter">;; </span><span class="comment">evaludated before sending a single byte to *stream*, which some
+</span><span class="comment-delimiter">;; </span><span class="comment">HTML packages actually require.)
+</span>
+<span class="slime-reader-conditional">#+(or) '(html
+         (head (title "..."))
+         (body
+          (div (attrs)
+           (p "...")
+           (p "..."))
+          (div (attrs)
+           (ul
+            (li "...")
+            (li "..."))
+           (p "..."))))</span>
+
+<span class="slime-reader-conditional">#+(or) '(html
+         (head (title "..."))
+         (body
+          (loop for x in list
+             collect x)))</span>
+
+
+
+
+
+
+
+
+
+
+
+<span class="comment-delimiter">;; </span><span class="comment">Next, this is what Peter Seibel in PCL refers to as an HTML compiler...
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Take apart an s-expression describing the structure and content of
+</span><span class="comment-delimiter">;; </span><span class="comment">an HTML page, and convert the constant portions to continuous PRINC
+</span><span class="comment-delimiter">;; </span><span class="comment">statements.  That is, despite different levels of the structure,
+</span><span class="comment-delimiter">;; </span><span class="comment">reconcile the static text as one continuous block of characters to
+</span><span class="comment-delimiter">;; </span><span class="comment">work much like server-side includes dating back to the earliest
+</span><span class="comment-delimiter">;; </span><span class="comment">http servers of the early 1990's.  However, do this at
+</span><span class="comment-delimiter">;; </span><span class="comment">compile-time, so the programmer gets the benefits of thinking in
+</span><span class="comment-delimiter">;; </span><span class="comment">HTML while the run-time gains efficiencies of static text.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">The trick, however, is using lazy evaluation and therefore a macro.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">We don't want to evaluate the entire s-expression before converting
+</span><span class="comment-delimiter">;; </span><span class="comment">to a string, because that introduces unnecessary lag and consumes
+</span><span class="comment-delimiter">;; </span><span class="comment">an excess of run-time memory.  For long-running, multi-dispatched
+</span><span class="comment-delimiter">;; </span><span class="comment">process such as with FastCGI or mod_lisp, efficiency becomes
+</span><span class="comment-delimiter">;; </span><span class="comment">important.  This is a case of early optimization (but not premature
+</span><span class="comment-delimiter">;; </span><span class="comment">optimization).
+</span>
+
+<span class="comment-delimiter">;; </span><span class="comment">Conceptual Design:
+</span><span class="comment-delimiter">;; </span><span class="comment">- outter macro captures params without eval then feeds to inner macro as quoted
+</span><span class="comment-delimiter">;; </span><span class="comment">- inner macro then takes apart quoted param list
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Sometimes, you might find this idiom: macro calls function:
+</span><span class="comment-delimiter">;;</span><span class="comment">(defun inner-function (body)
+</span><span class="comment-delimiter">;;  </span><span class="comment">(dolist (line body)
+</span><span class="comment-delimiter">;;     </span><span class="comment">(pprint line)))
+</span><span class="comment-delimiter">;;</span><span class="comment">
+</span><span class="comment-delimiter">;;</span><span class="comment">(defmacro outer-macro (&amp;body body)
+</span><span class="comment-delimiter">;;  </span><span class="comment">(inner-function `(,@body)))
+</span>
+(<span class="keyword">defmacro</span> <span class="function-name">no-execute</span> (<span class="type">&amp;body</span> body)
+  <span class="doc">"Demonstrating the Lisp idiom of PUSH with NREVERSE"</span>
+  (<span class="keyword">let</span> (compiled)
+    (<span class="keyword">dolist</span> (line body)
+      <span class="comment-delimiter">;; </span><span class="comment">do something here
+</span>      (push line compiled))
+    (pprint (nreverse compiled))))
+
+<span class="slime-reader-conditional">#+(or)
+(macroexpand-1
+ (no-execute
+   (xml-open-element :html (:xmlns "http://www.w3.org/1999/xhtml" :lang "en"))
+   (xml-open-element :body ())
+   (let (*element-stack-to-be-closed*)
+     (no-execute
+       (xml-open-element :div (:id "tag" :class "foo"))
+       (xml-open-element :p (:id "para" :class "moo"))
+       (format *stream* "text")
+       (xml-close-element)))
+   (xml-close-element)))</span>
+
+
+<span class="comment-delimiter">;; </span><span class="comment">The important thing to note is that at no time did either of these
+</span><span class="comment-delimiter">;; </span><span class="comment">two attempt to evaluate the body as code!  This frees us to now
+</span><span class="comment-delimiter">;; </span><span class="comment">take apart the body s-expression for compile-time behavior that
+</span><span class="comment-delimiter">;; </span><span class="comment">optimizes the run-time.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Next, of the FIRST elements of each nested s-expression, we need to
+</span><span class="comment-delimiter">;; </span><span class="comment">determine which are macros or functions defined by our HTML package
+</span><span class="comment-delimiter">;; </span><span class="comment">versus defined elsewhere.  That lets us then decide whether to
+</span><span class="comment-delimiter">;; </span><span class="comment">apply immediate versus lazy evaluation.
+</span>
+
+(<span class="keyword">defun</span> <span class="function-name">compile-time-constant?</span> (s-exp)
+  (<span class="keyword">let</span> ((whole s-exp))
+    (<span class="keyword">typecase</span> whole
+      (null t)
+      (number t)
+      (string t)
+      (keyword t)
+      (list (<span class="keyword">dolist</span> (part whole t)
+              (<span class="keyword">unless</span> (compile-time-constant? part) (<span class="keyword">return</span> nil)))))))
+
+<span class="comment-delimiter">;; </span><span class="comment">(compile-time-constant? nil)
+</span><span class="comment-delimiter">;; </span><span class="comment">(compile-time-constant? :foo)
+</span><span class="comment-delimiter">;; </span><span class="comment">(compile-time-constant? '(1 2 3))
+</span><span class="comment-delimiter">;; </span><span class="comment">(compile-time-constant? "xyz")
+</span><span class="comment-delimiter">;; </span><span class="comment">(compile-time-constant? '(:p "text"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(compile-time-constant? '(:p (:class "foo") "text"))
+</span><span class="comment-delimiter">;; </span><span class="comment">(not (compile-time-constant? '(loop for x in (list 1 2 3) collect x)))
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">While #'compile-time-constant? isn't tail-recursive, it'll only be
+</span><span class="comment-delimiter">;; </span><span class="comment">executed at compile-time, so we can afford to be less concerned in
+</span><span class="comment-delimiter">;; </span><span class="comment">favor of readablity.
+</span>
+(<span class="keyword">defmacro</span> <span class="function-name">render</span> (<span class="type">&amp;body</span> body)
+  (<span class="keyword">let</span> ((source body)
+        compiled)
+    (<span class="keyword">dolist</span> (line source)
+      (<span class="keyword">if</span> (stringp line)
+          (push `(print ,line *stream*) compiled)
+          (<span class="keyword">let</span> ((command (first line)))
+            (<span class="keyword">if</span> (and (fboundp command)
+                     (eq (symbol-package command) *package*))
+
+                (<span class="keyword">destructuring-bind</span> (<span class="type">&amp;optional</span> attribute-list content) (cddr line)
+                  (<span class="keyword">if</span> (and (compile-time-constant? attribute-list)
+                           (compile-time-constant? content))
+                      (<span class="keyword">let</span> ((*stream* nil))
+                        (push `(pprint ,line *stream*) compiled))
+                      (push line compiled)))
+                (push line compiled)))))
+    `(<span class="keyword">progn</span> ,@(nreverse compiled))))
+
+<span class="slime-reader-conditional">#+(or)
+(macroexpand-1
+ '(render
+   (xml-open-element html (:xmlns "http://www.w3.org/1999/xhtml" :lang "en"))
+   (xml-open-element body ())
+   (let (*element-stack-to-be-closed*)
+     (render
+       (xml-open-element div (:id "tag" :class "foo"))
+       (loop for x in '(1 2 3 4 5)
+          collect (print (xml-element li () x) *stream*))
+       (xml-open-element p (:id "para" :class "moo"))
+       "text"
+       (xml-close-element)))
+   (xml-close-element)))</span>
+
+<span class="comment-delimiter">;; </span><span class="comment">Use of PRINT within the LOOP isn't ideal, but overall, it works!
+</span>
+
+
+
+
+
+
+
+<span class="comment-delimiter">;; </span><span class="comment">AFTERWORD:
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Why write your own HTML library when so many exist?  This is an
+</span><span class="comment-delimiter">;; </span><span class="comment">exercise since you probably already know HTML and can immediately
+</span><span class="comment-delimiter">;; </span><span class="comment">validate results visually.  That lets you focus on learning Lisp.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Going all the way, we'd want further optimization such that FORMAT
+</span><span class="comment-delimiter">;; </span><span class="comment">only gets used when absolutely necessary (i.e., when an actual
+</span><span class="comment-delimiter">;; </span><span class="comment">substitution is performed); otherwise, use PRINC.  
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">It's been done already.  Browse <a href="http://CLiki.net/">http://CLiki.net/</a> projects or read
+</span><span class="comment-delimiter">;; </span><span class="comment">Peter Seibel's book, _<em><a href="http://gigamonkeys.com/book">Practical Common Lisp</a></em>_.
+</span>
+<span class="comment-delimiter">;; </span><span class="comment">Sometimes, however, it's useful as an exercise to do it yourself.
+</span><span class="comment-delimiter">;; </span><span class="comment">It's important to face that learning curve rather than merely using
+</span><span class="comment-delimiter">;; </span><span class="comment">someone else's library all the time.  That might just make the
+</span><span class="comment-delimiter">;; </span><span class="comment">difference between a coder and a hacker.
+</span></pre>
+  </body>
+</html>
